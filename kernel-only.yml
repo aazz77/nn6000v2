@@ -1,0 +1,150 @@
+name: Build NN6000 v2 kernel only (BTF, LZMA)
+
+# Kernel-only build: toolchain + kernel + FIT image, no rootfs / packages.
+# Uses the SAME config.seed as the full build, so the kernel .config (and
+# therefore vermagic / symbol CRCs) is identical and works with existing kmods.
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_ref:
+        description: 'OpenWrt commit to build (default: r38384 = running system base)'
+        required: true
+        default: '7424e2ca306c801eaf9c9dee23545af1a4e66d20'
+
+permissions:
+  contents: write
+
+env:
+  OWRT_REF: ${{ github.event.inputs.openwrt_ref || '7424e2ca306c801eaf9c9dee23545af1a4e66d20' }}
+  KERNEL_SIZE_K: 6144
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout config repo
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib gettext git libncurses5-dev libssl-dev python3 \
+            python3-setuptools rsync unzip zlib1g-dev file wget curl
+
+      - name: Clone OpenWrt at pinned commit
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/openwrt/openwrt.git openwrt
+          cd openwrt
+          git checkout "${{ env.OWRT_REF }}"
+          echo "OPENWRT_REF=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Shrink kernel image (gzip -> LZMA FIT)
+        run: |
+          cd openwrt
+          F=target/linux/qualcommax/image/ipq60xx.mk
+          sed -i '/^define Device\/link_nn6000-v2$/,/^endef$/ s|^\t\$(Device/link_nn6000-v1)$|&\n\t$(call Device/FitImageLzma)|' "$F"
+          grep -A3 'define Device/link_nn6000-v2' "$F" | grep -q 'FitImageLzma' || { echo "ERROR: LZMA patch not applied!"; exit 1; }
+
+      - name: Init feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Apply config seed
+        run: |
+          cd openwrt
+          cp ../config.seed .config
+          make defconfig
+          DEV='CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_link_nn6000-v2'
+          sed -i "s/^# ${DEV} is not set/${DEV}=y/" .config
+          grep -q "^${DEV}=y$" .config || echo "${DEV}=y" >> .config
+          grep -q '^CONFIG_TARGET_qualcommax=y$' .config || echo 'CONFIG_TARGET_qualcommax=y' >> .config
+          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx=y$' .config || echo 'CONFIG_TARGET_qualcommax_ipq60xx=y' >> .config
+          make oldconfig
+          grep -q '^CONFIG_KERNEL_DEBUG_INFO_BTF=y$' .config || { echo "ERROR: BTF not enabled!"; exit 1; }
+          grep -q "^${DEV}=y$" .config || { echo "ERROR: wrong device!"; exit 1; }
+          echo "OK: BTF + device config verified"
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: owrt-dl-${{ env.OWRT_REF }}
+
+      - name: Download sources
+        run: |
+          cd openwrt
+          make -j$(nproc) download
+
+      - name: Build tools + toolchain
+        run: |
+          cd openwrt
+          make -j$(nproc) tools/install toolchain/install V=s
+
+      - name: Build kernel
+        run: |
+          cd openwrt
+          make -j$(nproc) target/linux/compile V=s
+
+      - name: Build kernel FIT image
+        run: |
+          cd openwrt
+          # Without rootfs the sysupgrade/factory steps fail on purpose; the FIT image
+          # is produced before that. -k keeps going, we verify the itb ourselves.
+          make target/linux/install -k V=s || true
+
+      - name: Collect kernel
+        run: |
+          set -e
+          mkdir -p release
+          ITB=$(find openwrt/build_dir -name 'link_nn6000-v2-uImage.itb' | head -1)
+          [ -n "$ITB" ] || { echo "ERROR: kernel itb not produced!"; exit 1; }
+          SIZE=$(stat -c %s "$ITB"); LIMIT=$((KERNEL_SIZE_K*1024))
+          echo "kernel itb: $SIZE bytes, limit: $LIMIT bytes, margin: $((LIMIT-SIZE))"
+          [ "$SIZE" -le "$LIMIT" ] || { echo "ERROR: kernel too big (${SIZE} > ${LIMIT})"; exit 1; }
+          cp "$ITB" release/kernel-hlos.itb
+          truncate -s ${KERNEL_SIZE_K}k release/kernel-hlos.itb     # pad to partition-sized image
+          cp "$ITB" release/kernel-raw.itb
+          cp openwrt/.config release/build.config
+          VM=$(find openwrt/build_dir -path '*linux-qualcommax_ipq60xx/linux-*/.vermagic' | head -1)
+          [ -n "$VM" ] && cp "$VM" release/vermagic.txt || true
+          (cd release && sha256sum * > sha256sums.txt)
+          ls -lh release/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nn6000-v2-kernel-${{ github.run_number }}
+          path: release/
+          retention-days: 90
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernel-r${{ github.run_number }}
+          name: NN6000 v2 kernel only - run #${{ github.run_number }}
+          body: |
+            Kernel-only build (BTF, LZMA FIT) for Link NN6000 v2. OpenWrt commit: ${{ env.OPENWRT_REF }}
+
+            - kernel-hlos.itb -- padded to 6144k, flash to 0:HLOS (mmcblk0p10). Keeps current rootfs/LuCI/config.
+            - kernel-raw.itb  -- unpadded FIT image
+            - vermagic.txt    -- must match the running kernel's vermagic for existing kmods to load
+            - build.config / sha256sums.txt
+
+            Recommended: test first with U-Boot tftp boot of kernel-raw.itb (no flash write).
+            Backup, then flash:
+              dd if=/dev/mmcblk0p10 of=/tmp/hlos-backup.bin
+              dd if=kernel-hlos.itb of=/dev/mmcblk0p10 bs=1M conv=fsync
+              reboot
+            Verify: ls -l /sys/kernel/btf/vmlinux
+          files: release/*
+          prerelease: true
