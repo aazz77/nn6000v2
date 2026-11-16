@@ -58,6 +58,22 @@ jobs:
           cd openwrt
           cp ../config.seed .config
           make defconfig
+          echo "=== device lines right after defconfig (diagnostic) ==="
+          grep -i 'nn6000\|^CONFIG_TARGET_qualcommax' .config || true
+
+          # defconfig can reset target-device symbols when given a minimal seed.
+          # Force the exact device back on, then use oldconfig (which keeps set values).
+          DEV='CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_link_nn6000-v2'
+          sed -i "s/^# ${DEV} is not set/${DEV}=y/" .config
+          grep -q "^${DEV}=y$" .config || echo "${DEV}=y" >> .config
+          grep -q '^CONFIG_TARGET_DEVICE_PACKAGES_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=' .config || \
+            echo 'CONFIG_TARGET_DEVICE_PACKAGES_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=""' >> .config
+          # ensure target triple stays selected
+          grep -q '^CONFIG_TARGET_qualcommax=y$' .config || echo 'CONFIG_TARGET_qualcommax=y' >> .config
+          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx=y$' .config || echo 'CONFIG_TARGET_qualcommax_ipq60xx=y' >> .config
+          make oldconfig
+          echo "=== device lines after oldconfig (diagnostic) ==="
+          grep -i 'nn6000\|^CONFIG_TARGET_qualcommax' .config || true
 
       - name: Verify BTF config applied
         run: |
@@ -68,7 +84,8 @@ jobs:
           grep -q '^CONFIG_KERNEL_DEBUG_INFO=y$' .config || { echo "ERROR: DEBUG_INFO not enabled!"; exit 1; }
           ! grep -q '^CONFIG_KERNEL_DEBUG_INFO_REDUCED=y$' .config || { echo "ERROR: DEBUG_INFO_REDUCED must be off!"; exit 1; }
           echo "=== target device ==="
-          grep -q 'CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=y' .config || { echo "ERROR: wrong device!"; exit 1; }
+          grep -i 'nn6000' .config || true
+          grep -q '^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=y$' .config || { echo "ERROR: wrong device!"; exit 1; }
           echo "OK: BTF + device config verified"
 
       - name: Cache downloads
