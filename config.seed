@@ -1,0 +1,33 @@
+# OpenWrt build config seed for Link NN6000 v2 (ipq60xx)
+# Target commit: 7424e2ca30 (r38384) = same kernel base as the running system
+# Purpose: enable kernel BTF (CO-RE eBPF / dae) while keeping kmod vermagic compatible
+#          with the modules already installed in the current rootfs.
+
+# ---- Target ----
+CONFIG_TARGET_qualcommax=y
+CONFIG_TARGET_qualcommax_ipq60xx=y
+CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=y
+
+# ---- Kernel BTF (critical) ----
+# KERNEL_DEBUG_INFO_BTF depends on: KERNEL_DEBUG_INFO && !KERNEL_DEBUG_INFO_REDUCED
+CONFIG_DEVEL=y
+CONFIG_KERNEL_DEBUG_INFO=y
+# CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
+CONFIG_KERNEL_DEBUG_INFO_BTF=y
+# (KERNEL_DEBUG_INFO_BTF_MODULES is def_bool y, auto-enabled by BTF)
+
+# ---- LuCI + Chinese language (so factory.bin is immediately usable) ----
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+# ---- Proxy / eBPF kmods & tools baked into factory.bin rootfs ----
+CONFIG_PACKAGE_kmod-tun=y
+CONFIG_PACKAGE_kmod-nf-tproxy=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+CONFIG_PACKAGE_ip-full=y
+CONFIG_PACKAGE_bpftool-full=y
+
+# ---- Common utilities ----
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_vim=y
+CONFIG_PACKAGE_wget-ssl=y
