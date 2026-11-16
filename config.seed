@@ -4,9 +4,13 @@
 #          with the modules already installed in the current rootfs.
 
 # ---- Target ----
+# NOTE: .config/Kconfig uses TARGET_<sub>_DEVICE_<dev>; buildinfo uses TARGET_DEVICE_<sub>_DEVICE_<dev>.
+# The workflow also force-sets the internal symbol after defconfig as a safeguard.
 CONFIG_TARGET_qualcommax=y
 CONFIG_TARGET_qualcommax_ipq60xx=y
+CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=y
 CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_link_nn6000-v2=y
+CONFIG_PACKAGE_ipq-wifi-link_nn6000=y
 
 # ---- Kernel BTF (critical) ----
 # KERNEL_DEBUG_INFO_BTF depends on: KERNEL_DEBUG_INFO && !KERNEL_DEBUG_INFO_REDUCED
