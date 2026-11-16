@@ -47,6 +47,17 @@ jobs:
           git checkout "${{ env.OWRT_REF }}"
           echo "OPENWRT_REF=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
+      - name: Shrink kernel image (gzip -> LZMA FIT)
+        # BTF makes the FIT kernel ~6.6 MiB with gzip, over NN6000's 6144k KERNEL_SIZE.
+        # LZMA FIT (already used by other qualcommax devices) is ~25-30% smaller.
+        # Only v2 is changed; sysupgrade/factory/initramfs all use this KERNEL.
+        run: |
+          cd openwrt
+          F=target/linux/qualcommax/image/ipq60xx.mk
+          sed -i '/^define Device\/link_nn6000-v2$/,/^endef$/ s|^\t\$(Device/link_nn6000-v1)$|&\n\t$(call Device/FitImageLzma)|' "$F"
+          sed -n '/^define Device\/link_nn6000-v2$/,/^endef$/p' "$F"
+          grep -A3 'define Device/link_nn6000-v2' "$F" | grep -q 'FitImageLzma' || { echo "ERROR: LZMA patch not applied!"; exit 1; }
+
       - name: Init feeds
         run: |
           cd openwrt
