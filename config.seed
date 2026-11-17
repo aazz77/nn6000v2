@@ -20,6 +20,13 @@ CONFIG_KERNEL_DEBUG_INFO=y
 CONFIG_KERNEL_DEBUG_INFO_BTF=y
 # (KERNEL_DEBUG_INFO_BTF_MODULES is def_bool y, auto-enabled by BTF)
 
+# ---- dae kernel requirements (BPF_EVENTS -> KPROBES -> FTRACE/PERF_EVENTS; KPROBE_EVENTS auto) ----
+CONFIG_KERNEL_BPF_EVENTS=y
+CONFIG_KERNEL_XDP_SOCKETS=y
+# NET_CLS_BPF / NET_SCH_INGRESS / NET_CLS_ACT come from these kmods (built as =m)
+CONFIG_PACKAGE_kmod-sched-core=y
+CONFIG_PACKAGE_kmod-sched-bpf=y
+
 # ---- LuCI + Chinese language (so factory.bin is immediately usable) ----
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
