@@ -5,19 +5,29 @@
 
 ## 为什么能只刷内核
 
-- 该机 eMMC 分区里内核与 rootfs 物理分离：
-  - `0:HLOS` = `/dev/mmcblk0p10` (12M) → 内核 FIT image
-  - `rootfs` = `/dev/mmcblk0p11` (2G) → 系统 + kmod
-- BTF/DEBUG_INFO 是调试信息选项，**不改变内核 vermagic 与符号 CRC**，
-  因此同一 commit、默认 config 下只加 BTF，新内核与现有 kmod 兼容。
-- CI 锁定到 `7424e2ca30`（r38384），即当前机器内核的基础 commit。
+- 该机 eMMC 分区里内核与 rootfs 物理分离、按分区名独立写入：
+  - `0:HLOS` = `/dev/mmcblk0p10` (12M, sector 9506–34081) → 内核 FIT image
+  - `rootfs` = `/dev/mmcblk0p11` (2G, sector 34082–) → 系统 + kmod
+  - 官方 `platform.sh` 用 `CI_KERNPART="0:HLOS"` + `emmc_do_upgrade` 按分区名写，
+    `KERNEL_SIZE` 只决定 factory.bin 拼接时的 padding，**不改变分区布局**。
+- CI 锁定到 `7424e2ca30`（r38384），与机器原厂内核同一 commit/基线。
+
+## 关键：内核必须用 gzip FIT，不能用 LZMA
+
+- 该机 U-Boot（高通 APPSBL）**只认官方的 gzip FIT**，不解压 LZMA FIT。
+  实测把内核改成 `Device/FitImageLzma` 后，无论只刷内核还是整包 factory.bin，
+  开机都直接掉进 U-Boot 命令行。只有 MikroTik 那类设备配了
+  `mikrotik-lzma-loader` 自解压引导才能用 LZMA，本机没有。
+- BTF + eBPF 选项让 gzip 内核涨到约 6.6M > 官方 `KERNEL_SIZE=6144k`，
+  所以 CI 会 patch `KERNEL_SIZE := 12288k`（p10 物理满容量 12M），
+  让 gzip 镜像能通过大小检查并 pad 满整个分区。
 
 ## 如何触发编译
 
-两种方式：
-1. **push 到 main**（推荐，符合日常习惯）：任何 push 都会自动触发编译。
-2. 手动：GitHub 网页 → Actions → `Build OpenWrt NN6000 v2 (BTF kernel)` → Run workflow，
-   `openwrt_ref` 保持默认即可。
+手动触发：GitHub 网页 → Actions → `Build NN6000 v2 kernel only (BTF, gzip)` → Run workflow。
+- `openwrt_ref` 保持默认（`7424e2ca30`）。
+- 想要整包：`build_image` 勾上；只要内核：保持默认 false。
+- 当前 workflow 只配了手动触发，push 不会自动编译。
 
 首次约 40–90 分钟（GitHub Actions 免费额度内，公网 runner 性能一般）。
 
@@ -29,7 +39,7 @@
 
 | 文件 | 用途 |
 |---|---|
-| `kernel-hlos.itb` | **只刷内核**，6144k，写入 `0:HLOS`，保留现有 rootfs/LuCI/配置 |
+| `kernel-hlos.itb` | **只刷内核**，gzip FIT pad 到 12288k（满 p10），写入 `0:HLOS`，保留现有 rootfs/配置 |
 | `*-factory.bin` | 完整镜像，U-Boot 整包刷（内核+rootfs 都换） |
 | `*-sysupgrade.bin` | 完整镜像，系统内 `sysupgrade` 用 |
 | `*-initramfs-uImage.itb` | 救援内核，U-Boot tftp 启动、不写盘 |

@@ -1,4 +1,4 @@
-name: Build NN6000 v2 kernel only (BTF, LZMA)
+name: Build NN6000 v2 kernel only (BTF, gzip)
 
 # Kernel-only build: toolchain + kernel + FIT image, no rootfs / packages.
 # Uses the SAME config.seed as the full build, so the kernel .config (and
@@ -20,7 +20,7 @@ permissions:
 
 env:
   OWRT_REF: ${{ github.event.inputs.openwrt_ref || '7424e2ca306c801eaf9c9dee23545af1a4e66d20' }}
-  KERNEL_SIZE_K: 6144
+  KERNEL_SIZE_K: 12288
 
 jobs:
   kernel:
@@ -66,15 +66,26 @@ jobs:
       - name: Record OpenWrt commit
         run: echo "OPENWRT_REF=$(git -C openwrt rev-parse HEAD)" >> $GITHUB_ENV
 
-      - name: Shrink kernel image (gzip -> LZMA FIT)
+      - name: Use gzip FIT and enlarge KERNEL_SIZE (12M = full p10)
         run: |
           cd openwrt
           F=target/linux/qualcommax/image/ipq60xx.mk
-          # idempotent: the tree may come from cache with the patch already applied
-          if ! sed -n '/^define Device\/link_nn6000-v2$/,/^endef$/p' "$F" | grep -q FitImageLzma; then
-            sed -i '/^define Device\/link_nn6000-v2$/,/^endef$/ s|^\t\$(Device/link_nn6000-v1)$|&\n\t$(call Device/FitImageLzma)|' "$F"
-          fi
-          sed -n '/^define Device\/link_nn6000-v2$/,/^endef$/p' "$F" | grep -q FitImageLzma || { echo "ERROR: LZMA patch not applied!"; exit 1; }
+          # The cached tree may still carry an earlier LZMA patch -- remove it.
+          # LZMA FIT cannot be decompressed by this board's U-Boot (it boots only
+          # the stock gzip FIT), so we must stay on the default Device/FitImage.
+          sed -i '/^define Device\/link_nn6000-v2$/,/^endef$/ { /\$(call Device\/FitImageLzma)/d; }' "$F"
+          ! grep -q 'FitImageLzma' "$F" || { echo "ERROR: LZMA patch still present!"; exit 1; }
+          # Stock KERNEL_SIZE is 6144k, but gzip+BTF+eBPF kernel is ~6.6M.
+          # p10 (0:HLOS) is physically 12M, so raise the limit to fill the partition.
+          sed -i '/^define Device\/link_nn6000-v1$/,/^endef$/ s|^\tKERNEL_SIZE := 6144k$|\tKERNEL_SIZE := 12288k|' "$F"
+          grep -q 'KERNEL_SIZE := 12288k' "$F" || { echo "ERROR: KERNEL_SIZE patch not applied!"; exit 1; }
+          echo "=== patched device definitions ==="
+          sed -n '/^define Device\/link_nn6000-v1$/,/^endef$/p' "$F"
+          sed -n '/^define Device\/link_nn6000-v2$/,/^endef$/p' "$F"
+          # Cached tree may carry a stale LZMA-packed FIT from an earlier run.
+          # Force repackaging so the .itb is rebuilt as gzip FIT.
+          find build_dir -name 'link_nn6000-v2-uImage.itb' -delete 2>/dev/null || true
+          find build_dir -name '*.itb' -path '*qualcommax*' -delete 2>/dev/null || true
 
       - name: Enable BPF_STREAM_PARSER (required by dae, off in generic config)
         run: |
@@ -224,12 +235,15 @@ jobs:
           tag_name: kernel-r${{ github.run_number }}
           name: NN6000 v2 kernel only - run #${{ github.run_number }}
           body: |
-            Kernel-only build (BTF, LZMA FIT) for Link NN6000 v2. OpenWrt commit: ${{ env.OPENWRT_REF }}
+            BTF + eBPF kernel for Link NN6000 v2 (gzip FIT, U-Boot compatible). OpenWrt commit: ${{ env.OPENWRT_REF }}
 
-            - kernel-hlos.itb -- padded to 6144k, flash to 0:HLOS (mmcblk0p10). Keeps current rootfs/LuCI/config.
-            - kernel-raw.itb  -- unpadded FIT image
+            - kernel-hlos.itb -- gzip FIT padded to 12288k (full 0:HLOS partition), flash to mmcblk0p10. Keeps current rootfs/LuCI/config.
+            - kernel-raw.itb  -- unpadded gzip FIT (~6.6M)
+            - *-factory.bin   -- full image (when build_image=true), kernel+rootfs written by partition name
             - vermagic.txt    -- must match the running kernel's vermagic for existing kmods to load
             - build.config / sha256sums.txt
+
+            NOTE: LZMA FIT is NOT used -- this board's U-Boot only boots the stock gzip FIT.
 
             Recommended: test first with U-Boot tftp boot of kernel-raw.itb (no flash write).
             Backup, then flash:
