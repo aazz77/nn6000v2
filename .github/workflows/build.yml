@@ -1,8 +1,8 @@
 name: Build OpenWrt NN6000 v2 (BTF kernel)
 
 on:
-  push:
-    branches: [main]
+  #push:
+    #branches: [main]
   workflow_dispatch:
     inputs:
       openwrt_ref:
