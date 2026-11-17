@@ -39,21 +39,40 @@ jobs:
             gcc-multilib gettext git libncurses5-dev libssl-dev python3 \
             python3-setuptools rsync unzip zlib1g-dev file wget curl
 
+      # ---- Cache of the whole source tree AFTER tools+toolchain are built ----
+      # Restores file mtimes too, so make sees tools/toolchain as up to date and skips
+      # ~25-35 min. Feeds are also pinned by this cache (feeds are not pinned otherwise).
+      - name: Restore tools+toolchain cache
+        id: tc
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            openwrt
+            !openwrt/dl
+          key: owrt-tc-v1-${{ env.OWRT_REF }}
+
       - name: Clone OpenWrt at pinned commit
+        if: steps.tc.outputs.cache-hit != 'true'
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/openwrt/openwrt.git openwrt
           cd openwrt
           git checkout "${{ env.OWRT_REF }}"
-          echo "OPENWRT_REF=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Record OpenWrt commit
+        run: echo "OPENWRT_REF=$(git -C openwrt rev-parse HEAD)" >> $GITHUB_ENV
 
       - name: Shrink kernel image (gzip -> LZMA FIT)
         run: |
           cd openwrt
           F=target/linux/qualcommax/image/ipq60xx.mk
-          sed -i '/^define Device\/link_nn6000-v2$/,/^endef$/ s|^\t\$(Device/link_nn6000-v1)$|&\n\t$(call Device/FitImageLzma)|' "$F"
-          grep -A3 'define Device/link_nn6000-v2' "$F" | grep -q 'FitImageLzma' || { echo "ERROR: LZMA patch not applied!"; exit 1; }
+          # idempotent: the tree may come from cache with the patch already applied
+          if ! sed -n '/^define Device\/link_nn6000-v2$/,/^endef$/p' "$F" | grep -q FitImageLzma; then
+            sed -i '/^define Device\/link_nn6000-v2$/,/^endef$/ s|^\t\$(Device/link_nn6000-v1)$|&\n\t$(call Device/FitImageLzma)|' "$F"
+          fi
+          sed -n '/^define Device\/link_nn6000-v2$/,/^endef$/p' "$F" | grep -q FitImageLzma || { echo "ERROR: LZMA patch not applied!"; exit 1; }
 
       - name: Init feeds
+        if: steps.tc.outputs.cache-hit != 'true'
         run: |
           cd openwrt
           ./scripts/feeds update -a
@@ -63,6 +82,7 @@ jobs:
         run: |
           cd openwrt
           cp ../config.seed .config
+          echo 'CONFIG_CCACHE=y' >> .config     # speeds up re-runs of the kernel build
           make defconfig
           DEV='CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_link_nn6000-v2'
           sed -i "s/^# ${DEV} is not set/${DEV}=y/" .config
@@ -97,10 +117,28 @@ jobs:
           cd openwrt
           make -j$(nproc) tools/install toolchain/install V=s
 
+      - name: Save tools+toolchain cache
+        if: steps.tc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt
+            !openwrt/dl
+          key: owrt-tc-v1-${{ env.OWRT_REF }}
+
+      # ccache dir lives inside the tree, so restore it only after the tree exists
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: openwrt/.ccache
+          key: owrt-ccache-${{ env.OWRT_REF }}-${{ github.run_id }}
+          restore-keys: owrt-ccache-${{ env.OWRT_REF }}-
+
       - name: Build kernel
         run: |
           cd openwrt
           make -j$(nproc) target/linux/compile V=s
+          staging_dir/host/bin/ccache -s 2>/dev/null || true
 
       - name: Build kernel FIT image
         run: |
@@ -132,6 +170,13 @@ jobs:
           [ -n "$VM" ] && cp "$VM" release/vermagic.txt || true
           (cd release && sha256sum * > sha256sums.txt)
           ls -lh release/
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: openwrt/.ccache
+          key: owrt-ccache-${{ env.OWRT_REF }}-${{ github.run_id }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
