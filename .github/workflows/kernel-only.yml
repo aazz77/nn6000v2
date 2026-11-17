@@ -71,6 +71,15 @@ jobs:
           fi
           sed -n '/^define Device\/link_nn6000-v2$/,/^endef$/p' "$F" | grep -q FitImageLzma || { echo "ERROR: LZMA patch not applied!"; exit 1; }
 
+      - name: Enable BPF_STREAM_PARSER (required by dae, off in generic config)
+        run: |
+          cd openwrt
+          F=target/linux/qualcommax/ipq60xx/config-default
+          for o in BPF_STREAM_PARSER STREAM_PARSER; do
+            grep -q "^CONFIG_$o=y$" "$F" || echo "CONFIG_$o=y" >> "$F"
+          done
+          grep -E 'STREAM_PARSER' "$F"
+
       - name: Init feeds
         if: steps.tc.outputs.cache-hit != 'true'
         run: |
@@ -139,6 +148,11 @@ jobs:
           cd openwrt
           make -j$(nproc) target/linux/compile V=s
           staging_dir/host/bin/ccache -s 2>/dev/null || true
+          KC=$(find build_dir -path '*linux-qualcommax_ipq60xx/linux-*/.config' | head -1)
+          for o in BPF_STREAM_PARSER KPROBES KPROBE_EVENTS BPF_EVENTS DEBUG_INFO_BTF NET_CLS_ACT NET_INGRESS NET_EGRESS; do
+            grep -q "^CONFIG_$o=y$" "$KC" && echo "ok   $o" || { echo "MISSING in kernel .config: $o"; exit 1; }
+          done
+          grep -qE '^CONFIG_NET_SCH_INGRESS=[ym]$' "$KC" && grep -qE '^CONFIG_NET_CLS_BPF=[ym]$' "$KC" || { echo "MISSING SCH_INGRESS/CLS_BPF"; exit 1; }
 
       - name: Build kernel FIT image
         run: |
