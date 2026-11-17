@@ -74,6 +74,13 @@ jobs:
           grep -q "^${DEV}=y$" .config || { echo "ERROR: wrong device!"; exit 1; }
           echo "OK: BTF + device config verified"
 
+      - name: Verify dae kernel options in .config
+        run: |
+          cd openwrt
+          for o in KERNEL_DEBUG_INFO_BTF KERNEL_BPF_EVENTS KERNEL_KPROBES KERNEL_KPROBE_EVENTS KERNEL_CGROUP_BPF KERNEL_XDP_SOCKETS PACKAGE_kmod-sched-bpf PACKAGE_kmod-sched-core; do
+            grep -q "^CONFIG_$o=y$" .config && echo "ok   $o" || { echo "MISSING $o"; exit 1; }
+          done
+
       - name: Cache downloads
         uses: actions/cache@v4
         with:
@@ -115,6 +122,12 @@ jobs:
           truncate -s ${KERNEL_SIZE_K}k release/kernel-hlos.itb     # pad to partition-sized image
           cp "$ITB" release/kernel-raw.itb
           cp openwrt/.config release/build.config
+          KC=$(find openwrt/build_dir -path '*linux-qualcommax_ipq60xx/linux-*/.config' | head -1)
+          if [ -n "$KC" ]; then
+            cp "$KC" release/kernel.config
+            echo "=== dae kernel options (resolved kernel .config) ==="
+            grep -E '^(# )?CONFIG_(BPF|BPF_SYSCALL|BPF_JIT|CGROUPS|KPROBES|KPROBE_EVENTS|BPF_EVENTS|NET_INGRESS|NET_EGRESS|NET_SCH_INGRESS|NET_CLS_BPF|NET_CLS_ACT|BPF_STREAM_PARSER|DEBUG_INFO|DEBUG_INFO_REDUCED|DEBUG_INFO_BTF)[ =]' "$KC" | tee release/dae-check.txt
+          fi
           VM=$(find openwrt/build_dir -path '*linux-qualcommax_ipq60xx/linux-*/.vermagic' | head -1)
           [ -n "$VM" ] && cp "$VM" release/vermagic.txt || true
           (cd release && sha256sum * > sha256sums.txt)
