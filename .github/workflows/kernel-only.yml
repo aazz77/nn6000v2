@@ -73,8 +73,26 @@ jobs:
           # The cached tree may still carry an earlier LZMA patch -- remove it.
           # LZMA FIT cannot be decompressed by this board's U-Boot (it boots only
           # the stock gzip FIT), so we must stay on the default Device/FitImage.
-          sed -i '/^define Device\/link_nn6000-v2$/,/^endef$/ { /\$(call Device\/FitImageLzma)/d; }' "$F"
-          ! grep -q 'FitImageLzma' "$F" || { echo "ERROR: LZMA patch still present!"; exit 1; }
+          # NOTE: v2 inherits from v1 ( "$(Device/link_nn6000-v1)" ), so an
+          # earlier patch may live in EITHER block -- clean both.
+          for DEV in link_nn6000-v1 link_nn6000-v2; do
+            sed -i "/^define Device\/${DEV}$/,/^endef$/ { /\$(call Device\/FitImageLzma)/d; }" "$F"
+          done
+          # The old patch may have REPLACED FitImage with FitImageLzma in v1,
+          # so restore the gzip default if the line is now missing.
+          if ! sed -n '/^define Device\/link_nn6000-v1$/,/^endef$/p' "$F" | grep -Fq '$(call Device/FitImage)'; then
+            sed -i '/^define Device\/link_nn6000-v1$/a\	$(call Device/FitImage)' "$F"
+          fi
+          # Other devices (e.g. 8devices_mango-dvk) legitimately use FitImageLzma,
+          # so only verify the two NN6000 blocks -- not the whole file.
+          for DEV in link_nn6000-v1 link_nn6000-v2; do
+            sed -n "/^define Device\/${DEV}$/,/^endef$/p" "$F" | grep -q 'FitImageLzma' && {
+              echo "ERROR: LZMA patch still present in ${DEV}!"; exit 1
+            }
+          done
+          sed -n '/^define Device\/link_nn6000-v1$/,/^endef$/p' "$F" | grep -q '\$(call Device/FitImage)' || {
+            echo "ERROR: FitImage missing in link_nn6000-v1!"; exit 1
+          }
           # Stock KERNEL_SIZE is 6144k, but gzip+BTF+eBPF kernel is ~6.6M.
           # p10 (0:HLOS) is physically 12M, so raise the limit to fill the partition.
           sed -i '/^define Device\/link_nn6000-v1$/,/^endef$/ s|^\tKERNEL_SIZE := 6144k$|\tKERNEL_SIZE := 12288k|' "$F"
